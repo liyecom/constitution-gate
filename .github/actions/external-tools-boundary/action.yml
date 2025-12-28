@@ -1,0 +1,61 @@
+name: "External Tools Boundary Guard"
+description: "Prevent external execution frameworks from leaking into protected architectural layers"
+author: "LiYe OS"
+
+inputs:
+  protected_paths:
+    description: "Comma-separated list of protected directories"
+    required: true
+    default: "src/method,src/skill"
+
+  forbidden_patterns:
+    description: "Comma-separated list of forbidden patterns"
+    required: true
+    default: "crewai,CrewAI,langchain,LangChain,AutoGPT,agent\\.kickoff,Crew\\.from_,tool_call"
+
+  exclude_dirs:
+    description: "Comma-separated list of excluded directories"
+    required: false
+    default: "node_modules,dist,.git"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Boundary Scan
+      shell: bash
+      run: |
+        set -e
+
+        echo "🔍 External Tools Boundary Guard running..."
+
+        IFS=',' read -ra PROTECTED <<< "${{ inputs.protected_paths }}"
+        IFS=',' read -ra FORBIDDEN <<< "${{ inputs.forbidden_patterns }}"
+        IFS=',' read -ra EXCLUDES <<< "${{ inputs.exclude_dirs }}"
+
+        EXCLUDE_ARGS=""
+        for d in "${EXCLUDES[@]}"; do
+          EXCLUDE_ARGS="$EXCLUDE_ARGS --exclude-dir=$d"
+        done
+
+        VIOLATION=0
+
+        for path in "${PROTECTED[@]}"; do
+          if [ -d "$path" ]; then
+            for pattern in "${FORBIDDEN[@]}"; do
+              if grep -RIn $EXCLUDE_ARGS "$pattern" "$path"; then
+                VIOLATION=1
+              fi
+            done
+          fi
+        done
+
+        if [ "$VIOLATION" -eq 1 ]; then
+          echo ""
+          echo "❌ CONSTITUTION VIOLATION"
+          echo "External execution frameworks detected in protected layers."
+          echo "This is a constitutional violation, not a bug."
+          echo "Redesign instead of bypassing."
+          exit 1
+        else
+          echo "✅ Boundary intact. No external tool leakage detected."
+        fi
