@@ -1,0 +1,112 @@
+name: "Layer Dependency Guard"
+description: "Prevent forbidden cross-layer dependencies in layered architecture"
+author: "LiYe OS"
+
+inputs:
+  layer_rules:
+    description: "JSON array of forbidden dependency rules: [{from, to, pattern}]"
+    required: true
+    default: |
+      [
+        {"from": "src/method", "to": "src/runtime", "pattern": "from.*runtime|import.*runtime"},
+        {"from": "src/method", "to": "src/skill", "pattern": "from.*skill|import.*skill"},
+        {"from": "src/skill", "to": "src/runtime", "pattern": "from.*runtime|import.*runtime"},
+        {"from": "src/skill", "to": "src/domain", "pattern": "from.*domain|import.*domain"},
+        {"from": "src/runtime", "to": "src/skill", "pattern": "from.*skill|import.*skill"}
+      ]
+
+  file_extensions:
+    description: "Comma-separated list of file extensions to check"
+    required: false
+    default: "ts,js,py"
+
+  exclude_dirs:
+    description: "Comma-separated list of excluded directories"
+    required: false
+    default: "node_modules,dist,.git,__pycache__"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Layer Dependency Scan
+      shell: bash
+      run: |
+        set -e
+
+        echo "========================================"
+        echo " Layer Dependency Guard"
+        echo " Checking cross-layer import violations"
+        echo "========================================"
+        echo ""
+
+        # Parse inputs
+        RULES='${{ inputs.layer_rules }}'
+        IFS=',' read -ra EXTENSIONS <<< "${{ inputs.file_extensions }}"
+        IFS=',' read -ra EXCLUDES <<< "${{ inputs.exclude_dirs }}"
+
+        # Build exclude args
+        EXCLUDE_ARGS=""
+        for d in "${EXCLUDES[@]}"; do
+          EXCLUDE_ARGS="$EXCLUDE_ARGS --exclude-dir=$d"
+        done
+
+        # Build extension pattern
+        EXT_PATTERN=""
+        for ext in "${EXTENSIONS[@]}"; do
+          if [ -n "$EXT_PATTERN" ]; then
+            EXT_PATTERN="$EXT_PATTERN|"
+          fi
+          EXT_PATTERN="$EXT_PATTERN\\.$ext$"
+        done
+
+        VIOLATION=0
+        VIOLATIONS=""
+
+        # Parse JSON rules and check each
+        RULE_COUNT=$(echo "$RULES" | jq '. | length')
+
+        for ((i=0; i<$RULE_COUNT; i++)); do
+          FROM=$(echo "$RULES" | jq -r ".[$i].from")
+          TO=$(echo "$RULES" | jq -r ".[$i].to")
+          PATTERN=$(echo "$RULES" | jq -r ".[$i].pattern")
+
+          if [ -d "$FROM" ]; then
+            echo "Checking: $FROM -> $TO (forbidden)"
+
+            # Find files matching extensions
+            while IFS= read -r -d '' file; do
+              MATCHES=$(grep -nE "$PATTERN" "$file" 2>/dev/null || true)
+              if [ -n "$MATCHES" ]; then
+                VIOLATION=1
+                VIOLATIONS="${VIOLATIONS}\n[VIOLATION] $file imports from $TO:\n$MATCHES\n"
+              fi
+            done < <(find "$FROM" -type f \( -name "*.ts" -o -name "*.js" -o -name "*.py" \) -print0 2>/dev/null)
+          fi
+        done
+
+        if [ "$VIOLATION" -eq 1 ]; then
+          echo ""
+          echo "========================================"
+          echo " LAYER DEPENDENCY VIOLATION"
+          echo "========================================"
+          echo ""
+          echo -e "$VIOLATIONS"
+          echo ""
+          echo "----------------------------------------"
+          echo " Forbidden Dependencies:"
+          echo "----------------------------------------"
+          echo ""
+          echo "  Method -> Runtime  (Method is declaration only)"
+          echo "  Method -> Skill    (Method doesn't define capabilities)"
+          echo "  Skill  -> Runtime  (Skills don't execute runtime)"
+          echo "  Skill  -> Domain   (Skills don't depend on business)"
+          echo "  Runtime -> Skill   (Runtime doesn't directly call skills)"
+          echo ""
+          echo "  See: docs/architecture/ARCHITECTURE.md (Section 2)"
+          echo ""
+          exit 1
+        else
+          echo ""
+          echo "Layer dependencies intact. No violations found."
+          echo ""
+        fi
